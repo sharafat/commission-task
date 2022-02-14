@@ -1,64 +1,52 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400"></a></p>
+## Commission Calculation with Varying Business Rules
 
-<p align="center">
-<a href="https://travis-ci.org/laravel/framework"><img src="https://travis-ci.org/laravel/framework.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+This is a sample application developed as part of an assignment. The assignment was to develop an application
+where Business and Private clients can deposit and withdraw funds to/from their accounts. A commission fee is
+charged based on action (deposit/withdrawal), user type (Business/Private), as well as several business rules like
+commission-free withdrawal facility up to a certain amount for a specified maximum number of times in a week, and so on.
 
-## About Laravel
+The detailed specification can be found in the Task.md file.
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+## Notes about the solution
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+- Laravel framework has been used primarily to utilize the Dependency Injection container.
+- The entry point to the application is the `app/Scripts/calculate_commission.php` script.
+The application flow can be traced starting from there.
+- The business rules for calculating commission has been designed in a pattern to encapsulate
+each rule into a single Rule class, so as to minimize changes required to add/remove/reorder the rules.
+- In-memory array has been used as data store (`app\Repositories\TransactionRepository`).
+- Week start day has been set to `Monday` as specified, inside the `app\Providers\AppServiceProvider::boot()` method.
+To ease datetime related operations, `Carbon` has been used.
+- Commission fees have been rounded up to currency's decimal places as specified. PHP doesn't have a built-in
+solution for rounding up a floating number (irrespective of whether the next digit is >= 5). A solution has been used that is
+outlined in `Utils\Math::roundUp()`.
+- To prevent degrading performance due to calling the currency exchange rate API everytime it's needed, the API response has been
+cached during the entire lifecycle of the application.
+- Object-Oriented Design Principles like _Single Responsibility Principle_, _Open-Closed Principle_,
+_Dependency Inversion Principle_ etc. have been maintained as much as possible. 
+- It took around 8 hours to fully complete the application with all optimizations.
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
+## Setting Up
 
-## Learning Laravel
+1. Make sure `composer` is installed on the system.
+2. `cd` to this project directory.
+3. Run `composer update` to update the dependencies.
+4. Make the `storage` directory writable by everyone using this command:
 
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework.
+    `$ sudo chmod -R 777 storage`
 
-If you don't feel like reading, [Laracasts](https://laracasts.com) can help. Laracasts contains over 2000 video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
+## Running the Application
 
-## Laravel Sponsors
+1. Place `input.csv` file at a convenient location and note the absolute path.
+2. `cd` to this project directory.
+3. Run the following command to process the input and show the output
+(replace `<absolute-path-of-input.csv>` with the absolute path to `input.csv` file):
 
-We would like to extend our thanks to the following sponsors for funding Laravel development. If you are interested in becoming a sponsor, please visit the Laravel [Patreon page](https://patreon.com/taylorotwell).
+    `$ php artisan script app/Scripts/calculate_commission.php <absolute-path-of-input.csv>`
 
-### Premium Partners
+## Running Tests
 
-- **[Vehikl](https://vehikl.com/)**
-- **[Tighten Co.](https://tighten.co)**
-- **[Kirschbaum Development Group](https://kirschbaumdevelopment.com)**
-- **[64 Robots](https://64robots.com)**
-- **[Cubet Techno Labs](https://cubettech.com)**
-- **[Cyber-Duck](https://cyber-duck.co.uk)**
-- **[Many](https://www.many.co.uk)**
-- **[Webdock, Fast VPS Hosting](https://www.webdock.io/en)**
-- **[DevSquad](https://devsquad.com)**
-- **[Curotec](https://www.curotec.com/services/technologies/laravel/)**
-- **[OP.GG](https://op.gg)**
-- **[WebReinvent](https://webreinvent.com/?utm_source=laravel&utm_medium=github&utm_campaign=patreon-sponsors)**
-- **[Lendio](https://lendio.com)**
+1. `cd` to this project directory.
+2. Run the following command:
 
-## Contributing
-
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
-
-## Code of Conduct
-
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
-
-## Security Vulnerabilities
-
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
-
-## License
-
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+    `$ php artisan test`
