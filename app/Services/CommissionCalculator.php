@@ -4,17 +4,56 @@ namespace App\Services;
 
 use App\Models\Transaction;
 use App\Repositories\TransactionRepository;
+use App\Services\CommissionRules\BusinessClientWithdrawalRule;
+use App\Services\CommissionRules\CommissionRule;
+use App\Services\CommissionRules\DepositRule;
+use App\Services\CommissionRules\PrivateClientFreeWithdrawalAmountPerWeekRule;
+use App\Services\CommissionRules\PrivateClientFreeWithdrawalCountPerWeekRule;
+use App\Services\CommissionRules\PrivateClientWithdrawalRule;
 use App\Utils\Math;
-use Carbon\Carbon;
-use Illuminate\Support\Collection;
-use RuntimeException;
 
 class CommissionCalculator
 {
-    private const FREE_WITHDRAWAL_AMOUNT_CURRENCY = 'EUR';
+    /**
+     * The commission calculation rules act like a funnel or list of filters. Whenever a rule understands that its
+     * conditions have been met, it can calculate the commission or delegate the task to another filter specified by
+     * `nextRuleIfPassed`. If the rule understands that its conditions cannot be met, then it passes the task of
+     * calculating commission to another filter specified by `nextRuleIfFailed`.
+     *
+     * This design pattern helps encapsulate each business rule in separate classes, as well as makes it easy to
+     * add/remove/reorder business rules with minimal changes.
+     */
+    private const RULES_IN_ORDER = [
+        [
+            'rule'             => DepositRule::class,
+            'nextRuleIfPassed' => null,
+            'nextRuleIfFailed' => BusinessClientWithdrawalRule::class,
+        ],
+        [
+            'rule'             => BusinessClientWithdrawalRule::class,
+            'nextRuleIfPassed' => null,
+            'nextRuleIfFailed' => PrivateClientFreeWithdrawalCountPerWeekRule::class,
+        ],
+        [
+            'rule'             => PrivateClientFreeWithdrawalCountPerWeekRule::class,
+            'nextRuleIfPassed' => PrivateClientFreeWithdrawalAmountPerWeekRule::class,
+            'nextRuleIfFailed' => PrivateClientWithdrawalRule::class,
+        ],
+        [
+            'rule'             => PrivateClientFreeWithdrawalAmountPerWeekRule::class,
+            'nextRuleIfPassed' => PrivateClientWithdrawalRule::class,
+            'nextRuleIfFailed' => PrivateClientWithdrawalRule::class,
+        ],
+        [
+            'rule'             => PrivateClientWithdrawalRule::class,
+            'nextRuleIfPassed' => null,
+            'nextRuleIfFailed' => null,
+        ],
+    ];
 
     private TransactionRepository $transactionRepository;
     private CurrencyExchanger $currencyExchanger;
+    private ?CommissionRule $firstCommissionRule = null;
 
     public function __construct(TransactionRepository $transactionRepository, CurrencyExchanger $currencyExchanger)
     {
@@ -39,6 +78,15 @@ class CommissionCalculator
         return $this->roundUpToDecimalPlacesOfTransactionCurrency($commissionAmount, $transaction->amount);
     }
 
+    private function getCommissionAmount(Transaction $transaction): float
+    {
+        if ($this->firstCommissionRule === null) {
+            $this->instantiateCommissionRuleObjects();
+        }
+
+        return $this->firstCommissionRule->calculateCommission($transaction);
+    }
+
     private function roundUpToDecimalPlacesOfTransactionCurrency(float $commissionAmount, string $transactionAmount): string
     {
         $precision = Math::decimalDigits($transactionAmount);
@@ -46,75 +94,22 @@ class CommissionCalculator
         return number_format(Math::roundUp($commissionAmount, $precision), $precision, '.', '');
     }
 
-    private function getCommissionAmount(Transaction $transaction): float
+    private function instantiateCommissionRuleObjects(): void
     {
-        if ($transaction->operationType === Transaction::DEPOSIT_OPERATION) {
-            return $transaction->amount * 0.03 / 100;
-        }
+        $rulesInstances = [];
+        for ($i = count(self::RULES_IN_ORDER) - 1; $i >= 0; $i--) {
+            $rule = self::RULES_IN_ORDER[$i];
+            $ruleClass = $rule['rule'];
 
-        if ($transaction->operationType !== Transaction::WITHDRAW_OPERATION) {
-            throw new RuntimeException("Unknown operation type: $transaction->operationType");
-        }
-
-        if ($transaction->clientType === Transaction::BUSINESS_CLIENT) {
-            return $transaction->amount * 0.5 / 100;
-        }
-
-        if ($transaction->clientType !== Transaction::PRIVATE_CLIENT) {
-            throw new RuntimeException("Unknown user type: $transaction->clientType");
-        }
-
-        $commissionableTransactionAmount = $transaction->amount;
-        $withdrawalOperationCountInWeek =
-            $this->withdrawalOperationCountInWeek($transaction->clientId, $transaction->date);
-        $withdrawalAmountInWeek = $this->withdrawalAmountInWeek($transaction->clientId, $transaction->date);
-        if ($withdrawalOperationCountInWeek < 3 && $withdrawalAmountInWeek < 1000) {
-            $transactionAmountInFreeWithdrawalAmountCurrency = $this->currencyExchanger->exchange(
-                $transaction->amount,
-                $transaction->currency,
-                self::FREE_WITHDRAWAL_AMOUNT_CURRENCY
-            );
-            $freeWithdrawalAmountAvailable = 1000 - $withdrawalAmountInWeek;
-            $surplusAmountAboveFreeWithdrawalAmountInFreeWithdrawalAmountCurrency = max(
-                $transactionAmountInFreeWithdrawalAmountCurrency - $freeWithdrawalAmountAvailable,
-                0
-            );
-
-            $commissionableTransactionAmount = $this->currencyExchanger->exchange(
-                $surplusAmountAboveFreeWithdrawalAmountInFreeWithdrawalAmountCurrency,
-                self::FREE_WITHDRAWAL_AMOUNT_CURRENCY,
-                $transaction->currency
+            $rulesInstances[$ruleClass] = new $ruleClass(
+                $rule['nextRuleIfPassed'] !== null ? $rulesInstances[$rule['nextRuleIfPassed']] : null,
+                $rule['nextRuleIfFailed'] !== null ? $rulesInstances[$rule['nextRuleIfFailed']] : null,
+                $this->transactionRepository
             );
         }
 
-        return $commissionableTransactionAmount * 0.3 / 100;
-    }
+        $rulesInstances[PrivateClientFreeWithdrawalAmountPerWeekRule::class]->setCurrencyExchanger($this->currencyExchanger);
 
-    private function withdrawalOperationCountInWeek(int $clientId, Carbon $operationDate): int
-    {
-        return $this->withdrawalTransactionsInWeek($clientId, $operationDate)->count();
-    }
-
-    private function withdrawalAmountInWeek(int $clientId, Carbon $operationDate): float
-    {
-        return (float) $this->withdrawalTransactionsInWeek($clientId, $operationDate)
-                            ->map(
-                                fn(Transaction $transaction) => $this->currencyExchanger->exchange(
-                                    $transaction->amount,
-                                    $transaction->currency,
-                                    self::FREE_WITHDRAWAL_AMOUNT_CURRENCY
-                                )
-                            )
-                            ->sum();
-    }
-
-    private function withdrawalTransactionsInWeek(int $clientId, Carbon $operationDate): Collection
-    {
-        return $this->transactionRepository->getAll()->filter(
-            fn(Transaction $transaction) => $transaction->operationType === Transaction::WITHDRAW_OPERATION
-                                            && $transaction->clientId === $clientId
-                                            && $transaction->date >= $operationDate->copy()->startOfWeek()
-                                            && $transaction->date <= $operationDate
-        );
+        $this->firstCommissionRule = $rulesInstances[self::RULES_IN_ORDER[0]['rule']];
     }
 }
